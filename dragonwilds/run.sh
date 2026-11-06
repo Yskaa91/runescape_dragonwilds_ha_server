@@ -32,6 +32,25 @@ if [[ "$(id -u)" -eq 0 ]]; then
         "$0" "$@"
 fi
 
+# Fallback for containers started as a non-root user: read the options directly
+# if the file is readable.
+if [[ -z "${RSDW_OWNER_ID:-}" && -r "$OPTIONS" ]]; then
+    RSDW_OWNER_ID="$(jq -r '.owner_id // ""' "$OPTIONS")"
+    RSDW_SERVER_NAME="$(jq -r '.server_name // ""' "$OPTIONS")"
+    RSDW_WORLD_NAME="$(jq -r '.world_name // ""' "$OPTIONS")"
+    RSDW_ADMINS="$(jq -r '.admins // ""' "$OPTIONS")"
+    RSDW_ADDITIONAL_ARGS="$(jq -r '.additional_args // ""' "$OPTIONS")"
+    RSDW_PASSWORD="$(jq -r '.password // ""' "$OPTIONS")"
+    RSDW_ADMIN_PASSWORD="$(jq -r '.admin_password // ""' "$OPTIONS")"
+    RSDW_AUTO_STOP_ON_UPDATE="$(jq -r '.auto_stop_on_update // false' "$OPTIONS")"
+    if [[ "$(jq -r '.validate_files // false' "$OPTIONS")" == "true" ]]; then
+        STEAMAPPVALIDATE=1
+    fi
+    export RSDW_OWNER_ID RSDW_SERVER_NAME RSDW_WORLD_NAME RSDW_ADMINS \
+        RSDW_ADDITIONAL_ARGS RSDW_PASSWORD RSDW_ADMIN_PASSWORD \
+        RSDW_AUTO_STOP_ON_UPDATE STEAMAPPVALIDATE
+fi
+
 owner_id="${RSDW_OWNER_ID:-}"
 if [[ -z "$owner_id" ]]; then
     echo "[dragonwilds] ERROR: owner_id is required. Set it in the add-on configuration" \
