@@ -88,7 +88,10 @@ log "Starting server '${RSDW_SERVER_NAME}' (world: ${RSDW_WORLD_NAME})"
 
 # Drop to the image's server user, then hand over to its entrypoint. exec keeps
 # /entry.sh as PID 1 so the Supervisor's stop signal reaches the game server.
+# HOME must be set explicitly: setpriv changes the uid but leaves HOME pointing
+# at /root, and the entrypoint writes to $HOME/.steam.
 if [[ "$(id -u)" -eq 0 ]]; then
+    export HOME="/home/${SERVER_USER}"
     exec setpriv --reuid="$SERVER_UID" --regid="$SERVER_GID" --init-groups /entry.sh
 fi
 
