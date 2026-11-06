@@ -10,33 +10,35 @@ if [[ ! -f "$OPTIONS" ]]; then
     exit 1
 fi
 
-# Read one option as a JSON string. Missing/null becomes empty.
-opt() {
-    jq -r --arg k "$1" 'if .[$k] == null then "" else .[$k] | tostring end' "$OPTIONS"
-}
+# Supervisor writes /data/options.json as root with mode 0600, and this script
+# starts as root (see Dockerfile), so read it now and hand the values down as
+# environment variables before dropping to the server user.
+if [[ "$(id -u)" -eq 0 ]]; then
+    export RSDW_OWNER_ID="$(jq -r '.owner_id // ""' "$OPTIONS")"
+    export RSDW_SERVER_NAME="$(jq -r '.server_name // ""' "$OPTIONS")"
+    export RSDW_WORLD_NAME="$(jq -r '.world_name // ""' "$OPTIONS")"
+    export RSDW_ADMINS="$(jq -r '.admins // ""' "$OPTIONS")"
+    export RSDW_ADDITIONAL_ARGS="$(jq -r '.additional_args // ""' "$OPTIONS")"
+    export RSDW_PASSWORD="$(jq -r '.password // ""' "$OPTIONS")"
+    export RSDW_ADMIN_PASSWORD="$(jq -r '.admin_password // ""' "$OPTIONS")"
+    export RSDW_AUTO_STOP_ON_UPDATE="$(jq -r '.auto_stop_on_update // false' "$OPTIONS")"
+    if [[ "$(jq -r '.validate_files // false' "$OPTIONS")" == "true" ]]; then
+        export STEAMAPPVALIDATE=1
+    fi
+    # The server must run as the image's steam user, not root. sudo is
+    # passwordless for %sudo in the base image, so no extra capability is needed.
+    exec sudo -u steam --preserve-env -- "$0" "$@"
+fi
 
-owner_id="$(opt owner_id)"
+owner_id="${RSDW_OWNER_ID:-}"
 if [[ -z "$owner_id" ]]; then
     echo "[dragonwilds] ERROR: owner_id is required. Set it in the add-on configuration" \
         "(your Player ID from the in-game Settings menu)." >&2
     exit 1
 fi
 
-export RSDW_OWNER_ID="$owner_id"
-export RSDW_SERVER_NAME="$(opt server_name)"
-export RSDW_WORLD_NAME="$(opt world_name)"
-export RSDW_ADMINS="$(opt admins)"
-export RSDW_ADDITIONAL_ARGS="$(opt additional_args)"
-
-# Empty string is meaningful here: it disables the password. The image default
-# is "random", which regenerates on every start.
-export RSDW_PASSWORD="$(opt password)"
-export RSDW_ADMIN_PASSWORD="$(opt admin_password)"
-
-export RSDW_AUTO_STOP_ON_UPDATE="$(opt auto_stop_on_update)"
-if [[ "$(opt validate_files)" == "true" ]]; then
-    export STEAMAPPVALIDATE=1
-fi
+# Empty string is meaningful for the passwords: it disables them. The image
+# default is "random", which regenerates on every start.
 
 # Persist the world across add-on restarts/updates.
 SERVER_DIR=/home/steam/rsdw-dedicated
