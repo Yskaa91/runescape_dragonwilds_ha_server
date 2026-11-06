@@ -10,30 +10,33 @@ if [[ ! -f "$OPTIONS" ]]; then
     exit 1
 fi
 
-# Supervisor writes /data/options.json as root with mode 0600, and this script
-# starts as root (see Dockerfile), so read it now and hand the values down as
-# environment variables before dropping to the server user.
+# The Supervisor writes options.json as root with mode 0600, and this script
+# starts as root (see Dockerfile). Read every option here, then re-run this
+# script as the server user with the values passed explicitly. Neither
+# --preserve-env nor setpriv is used: --preserve-env keeps only a fixed
+# allowlist (so RSDW_* would be dropped) and setpriv --clear-groups needs
+# CAP_SETGID, which add-on containers do not have.
 if [[ "$(id -u)" -eq 0 ]]; then
-    export RSDW_OWNER_ID="$(jq -r '.owner_id // ""' "$OPTIONS")"
-    export RSDW_SERVER_NAME="$(jq -r '.server_name // ""' "$OPTIONS")"
-    export RSDW_WORLD_NAME="$(jq -r '.world_name // ""' "$OPTIONS")"
-    export RSDW_ADMINS="$(jq -r '.admins // ""' "$OPTIONS")"
-    export RSDW_ADDITIONAL_ARGS="$(jq -r '.additional_args // ""' "$OPTIONS")"
-    export RSDW_PASSWORD="$(jq -r '.password // ""' "$OPTIONS")"
-    export RSDW_ADMIN_PASSWORD="$(jq -r '.admin_password // ""' "$OPTIONS")"
-    export RSDW_AUTO_STOP_ON_UPDATE="$(jq -r '.auto_stop_on_update // false' "$OPTIONS")"
-    if [[ "$(jq -r '.validate_files // false' "$OPTIONS")" == "true" ]]; then
-        export STEAMAPPVALIDATE=1
-    fi
-    # The server must run as the image's steam user, not root. sudo is
-    # passwordless for %sudo in the base image, so no extra capability is needed.
-    exec sudo -u steam --preserve-env -- "$0" "$@"
+    exec sudo -u steam -- env \
+        RSDW_OWNER_ID="$(jq -r '.owner_id // ""' "$OPTIONS")" \
+        RSDW_SERVER_NAME="$(jq -r '.server_name // ""' "$OPTIONS")" \
+        RSDW_WORLD_NAME="$(jq -r '.world_name // ""' "$OPTIONS")" \
+        RSDW_ADMINS="$(jq -r '.admins // ""' "$OPTIONS")" \
+        RSDW_ADDITIONAL_ARGS="$(jq -r '.additional_args // ""' "$OPTIONS")" \
+        RSDW_PASSWORD="$(jq -r '.password // ""' "$OPTIONS")" \
+        RSDW_ADMIN_PASSWORD="$(jq -r '.admin_password // ""' "$OPTIONS")" \
+        RSDW_AUTO_STOP_ON_UPDATE="$(jq -r '.auto_stop_on_update // false' "$OPTIONS")" \
+        STEAMAPPVALIDATE="$(jq -r 'if (.validate_files // false) then 1 else 0 end' "$OPTIONS")" \
+        RSDW_PORT="${RSDW_PORT:-7777}" \
+        RSDW_BEACON_PORT="${RSDW_BEACON_PORT:-8888}" \
+        "$0" "$@"
 fi
 
 owner_id="${RSDW_OWNER_ID:-}"
 if [[ -z "$owner_id" ]]; then
     echo "[dragonwilds] ERROR: owner_id is required. Set it in the add-on configuration" \
         "(your Player ID from the in-game Settings menu)." >&2
+    echo "[dragonwilds] DEBUG: running as uid=$(id -u), options file readable=$([[ -r "$OPTIONS" ]] && echo yes || echo no)" >&2
     exit 1
 fi
 
