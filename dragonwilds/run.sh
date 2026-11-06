@@ -1,76 +1,95 @@
 #!/usr/bin/env bash
-# Map Home Assistant add-on options to the official image's environment
-# variables, then hand over to its entrypoint.
+# Home Assistant add-on wrapper for the official RuneScape: Dragonwilds server
+# image. Reads add-on options, maps them onto the image's RSDW_* environment
+# variables, prepares the persistent data directory, then hands over to the
+# image's own entrypoint.
 set -euo pipefail
 
 OPTIONS=/data/options.json
+SERVER_USER=steam
+SERVER_UID=1000
+SERVER_GID=1000
+SERVER_DIR=/home/steam/rsdw-dedicated
+DATA_DIR=/data/rsdw-dedicated
 
-if [[ ! -f "$OPTIONS" ]]; then
-    echo "[dragonwilds] ERROR: $OPTIONS not found" >&2
-    exit 1
-fi
+log() { echo "[dragonwilds] $*"; }
 
-# The Supervisor writes options.json as root with mode 0600, and this script
-# starts as root (see Dockerfile). Read every option here, then re-run this
-# script as the server user with the values passed explicitly. Neither
-# --preserve-env nor setpriv is used: --preserve-env keeps only a fixed
-# allowlist (so RSDW_* would be dropped) and setpriv --clear-groups needs
-# CAP_SETGID, which add-on containers do not have.
-if [[ "$(id -u)" -eq 0 ]]; then
-    exec sudo -u steam -- env \
-        RSDW_OWNER_ID="$(jq -r '.owner_id // ""' "$OPTIONS")" \
-        RSDW_SERVER_NAME="$(jq -r '.server_name // ""' "$OPTIONS")" \
-        RSDW_WORLD_NAME="$(jq -r '.world_name // ""' "$OPTIONS")" \
-        RSDW_ADMINS="$(jq -r '.admins // ""' "$OPTIONS")" \
-        RSDW_ADDITIONAL_ARGS="$(jq -r '.additional_args // ""' "$OPTIONS")" \
-        RSDW_PASSWORD="$(jq -r '.password // ""' "$OPTIONS")" \
-        RSDW_ADMIN_PASSWORD="$(jq -r '.admin_password // ""' "$OPTIONS")" \
-        RSDW_AUTO_STOP_ON_UPDATE="$(jq -r '.auto_stop_on_update // false' "$OPTIONS")" \
-        STEAMAPPVALIDATE="$(jq -r 'if (.validate_files // false) then 1 else 0 end' "$OPTIONS")" \
-        RSDW_PORT="${RSDW_PORT:-7777}" \
-        RSDW_BEACON_PORT="${RSDW_BEACON_PORT:-8888}" \
-        "$0" "$@"
-fi
-
-# Fallback for containers started as a non-root user: read the options directly
-# if the file is readable.
-if [[ -z "${RSDW_OWNER_ID:-}" && -r "$OPTIONS" ]]; then
-    RSDW_OWNER_ID="$(jq -r '.owner_id // ""' "$OPTIONS")"
-    RSDW_SERVER_NAME="$(jq -r '.server_name // ""' "$OPTIONS")"
-    RSDW_WORLD_NAME="$(jq -r '.world_name // ""' "$OPTIONS")"
-    RSDW_ADMINS="$(jq -r '.admins // ""' "$OPTIONS")"
-    RSDW_ADDITIONAL_ARGS="$(jq -r '.additional_args // ""' "$OPTIONS")"
-    RSDW_PASSWORD="$(jq -r '.password // ""' "$OPTIONS")"
-    RSDW_ADMIN_PASSWORD="$(jq -r '.admin_password // ""' "$OPTIONS")"
-    RSDW_AUTO_STOP_ON_UPDATE="$(jq -r '.auto_stop_on_update // false' "$OPTIONS")"
-    if [[ "$(jq -r '.validate_files // false' "$OPTIONS")" == "true" ]]; then
-        STEAMAPPVALIDATE=1
+# Read the add-on options.
+#
+# /data/options.json is written by the Supervisor as root with mode 0600, so the
+# script must run as root to read it. That is why the container starts as root
+# (see Dockerfile) and drops privileges only after the options are parsed.
+# The Supervisor API is a fallback for non-root starts; note that "supervisor"
+# does not resolve when host_network is enabled, so the file is the primary path.
+read_options() {
+    if [[ -r "$OPTIONS" ]]; then
+        cat "$OPTIONS"
+        return 0
     fi
-    export RSDW_OWNER_ID RSDW_SERVER_NAME RSDW_WORLD_NAME RSDW_ADMINS \
-        RSDW_ADDITIONAL_ARGS RSDW_PASSWORD RSDW_ADMIN_PASSWORD \
-        RSDW_AUTO_STOP_ON_UPDATE STEAMAPPVALIDATE
-fi
+    if [[ -n "${SUPERVISOR_TOKEN:-}" ]] &&
+        opts="$(curl -fsSL -m 10 -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+            http://supervisor/addons/self/options/config 2>/dev/null)"; then
+        printf '%s' "$opts"
+        return 0
+    fi
+    log "ERROR: cannot read add-on options: $OPTIONS is unreadable and the Supervisor API is unreachable"
+    return 1
+}
 
-owner_id="${RSDW_OWNER_ID:-}"
+# Read one option from the options JSON. Missing/null becomes empty.
+opt() {
+    local json="$1" key="$2"
+    printf '%s' "$json" | jq -r --arg k "$key" 'if .[$k] == null then "" else .[$k] | tostring end'
+}
+
+options="$(read_options)"
+
+owner_id="$(opt "$options" owner_id)"
 if [[ -z "$owner_id" ]]; then
-    echo "[dragonwilds] ERROR: owner_id is required. Set it in the add-on configuration" \
-        "(your Player ID from the in-game Settings menu)." >&2
-    echo "[dragonwilds] DEBUG: running as uid=$(id -u), options file readable=$([[ -r "$OPTIONS" ]] && echo yes || echo no)" >&2
+    log "ERROR: owner_id is required. Set it in the add-on configuration" \
+        "(your Player ID from the in-game Settings menu)."
     exit 1
 fi
+
+export RSDW_OWNER_ID="$owner_id"
+export RSDW_SERVER_NAME="$(opt "$options" server_name)"
+export RSDW_WORLD_NAME="$(opt "$options" world_name)"
+export RSDW_ADMINS="$(opt "$options" admins)"
+export RSDW_ADDITIONAL_ARGS="$(opt "$options" additional_args)"
 
 # Empty string is meaningful for the passwords: it disables them. The image
 # default is "random", which regenerates on every start.
+export RSDW_PASSWORD="$(opt "$options" password)"
+export RSDW_ADMIN_PASSWORD="$(opt "$options" admin_password)"
 
-# Persist the world across add-on restarts/updates.
-SERVER_DIR=/home/steam/rsdw-dedicated
-mkdir -p /config/rsdw-dedicated
-if [[ -d "$SERVER_DIR" && ! -L "$SERVER_DIR" && -z "$(ls -A "$SERVER_DIR" 2>/dev/null)" ]]; then
-    rmdir "$SERVER_DIR"
-fi
-if [[ ! -e "$SERVER_DIR" ]]; then
-    ln -s /config/rsdw-dedicated "$SERVER_DIR"
+export RSDW_AUTO_STOP_ON_UPDATE="$(opt "$options" auto_stop_on_update)"
+if [[ "$(opt "$options" validate_files)" == "true" ]]; then
+    export STEAMAPPVALIDATE=1
 fi
 
-echo "[dragonwilds] Starting server '${RSDW_SERVER_NAME}' (world: ${RSDW_WORLD_NAME})"
+# Keep the world and server files in /data, which the Supervisor always mounts
+# read-write and includes in backups. /config and /data are both root-owned on
+# the host, so the directory is created and handed to the server user here,
+# while this script still runs as root.
+mkdir -p "$DATA_DIR"
+chown -R "${SERVER_UID}:${SERVER_GID}" "$DATA_DIR"
+
+# Point the image's install directory at the persistent data directory. The
+# image creates /home/steam/rsdw-dedicated at build time, so replace it with a
+# symlink. Do this as root: /home/steam is writable by the server user, but the
+# existing directory is owned by it and must be removed first.
+if [[ -e "$SERVER_DIR" && ! -L "$SERVER_DIR" ]]; then
+    rm -rf "$SERVER_DIR"
+fi
+ln -sfn "$DATA_DIR" "$SERVER_DIR"
+chown -h "${SERVER_UID}:${SERVER_GID}" "$SERVER_DIR"
+
+log "Starting server '${RSDW_SERVER_NAME}' (world: ${RSDW_WORLD_NAME})"
+
+# Drop to the image's server user, then hand over to its entrypoint. exec keeps
+# /entry.sh as PID 1 so the Supervisor's stop signal reaches the game server.
+if [[ "$(id -u)" -eq 0 ]]; then
+    exec setpriv --reuid="$SERVER_UID" --regid="$SERVER_GID" --init-groups /entry.sh
+fi
+
 exec /entry.sh

@@ -1,5 +1,5 @@
 name: RuneScape Dragonwilds Server
-version: "1.0.3"
+version: "1.0.4"
 slug: dragonwilds
 description: Dedicated RuneScape Dragonwilds server for up to 6 players
 url: https://github.com/Yskaa91/runescape_dragonwilds_ha_server/tree/main/dragonwilds
@@ -8,7 +8,7 @@ arch:
 image: "ghcr.io/yskaa91/dragonwilds"
 startup: application
 boot: auto
-init: false
+init: true
 host_network: true
 ports:
   7777/udp: 7777
@@ -16,9 +16,6 @@ ports:
 ports_description:
   7777/udp: Game port
   8888/udp: Beacon port (game port + 1111)
-map:
-  - type: app_config
-    read_only: false
 options:
   owner_id: ""
   server_name: Dragonwilds

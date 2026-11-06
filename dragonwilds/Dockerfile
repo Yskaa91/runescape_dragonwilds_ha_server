@@ -1,15 +1,19 @@
-# Thin wrapper over the official Jagex image. All server logic lives there;
-# this only maps Home Assistant options onto its environment variables.
+# Home Assistant add-on wrapper for the official RuneScape: Dragonwilds server
+# image. All server logic stays in the upstream image; this only maps add-on
+# options onto its environment variables and prepares persistent storage.
+#
+# The container must start as root: the Supervisor mounts /data and /config as
+# root-owned, and the world directory has to be created and chowned before the
+# game server runs as the image's unprivileged "steam" user. run.sh drops
+# privileges itself before exec'ing /entry.sh.
 FROM ghcr.io/runescape/rsdw-dedicated:latest
 
 USER root
-COPY run.sh /ha-run.sh
-RUN chmod 0755 /ha-run.sh
+
+COPY run.sh /run.sh
+RUN chmod 0755 /run.sh
 
 ENV RSDW_PORT=7777 \
     RSDW_BEACON_PORT=8888
 
-# Deliberately no USER directive: the Supervisor writes /data/options.json as
-# root with mode 0600, so run.sh must start as root to read it, then drops to
-# the image's steam user before exec'ing /entry.sh.
-ENTRYPOINT ["/ha-run.sh"]
+ENTRYPOINT ["/run.sh"]
